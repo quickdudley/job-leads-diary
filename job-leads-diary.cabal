@@ -18,6 +18,9 @@ executable job-leads-diary-exe
   main-is:             Main.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base,
+                       bytestring,
+                       time,
+                       stm,
                        sqlite-simple,
                        uuid,
                        text
