@@ -23,7 +23,9 @@ executable job-leads-diary-exe
                        stm,
                        sqlite-simple,
                        uuid,
-                       text
+                       text,
+                       wai,
+                       warp-tls
   default-language:    Haskell2010
 
 test-suite job-leads-diary-test
