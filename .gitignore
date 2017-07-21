@@ -4,3 +4,4 @@
 *.sqlite3
 selfsigned.crt
 selfsigned.key
+frontend/node_modules
