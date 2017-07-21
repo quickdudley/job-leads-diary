@@ -161,6 +161,14 @@ followAction s (Action ff) y d = DBM (\_ c -> do
 
 newtype Contact = Contact UUID.UUID
 
+newContact :: T.Text -> DBM Contact
+newContact n = DBM (\_ c -> do
+  cid <- UUID.nextRandom
+  execute c "INSERT INTO contact(contact_id,contact_name) VALUES (?,?)"
+    (UUID.toByteString cid, n)
+  return (Contact cid)
+ )
+
 openDatabase :: String -> IO (Connection)
 openDatabase n = do
   conn <- open n
@@ -179,8 +187,7 @@ openDatabase n = do
     \ON DELETE SET NULL)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \contact(contact_id BLOB PRIMARY KEY, \
-    \contact_name TEXT, \
-    \FOREIGN KEY (source_id) REFERENCES source(source_id) ON DELETE SET NULL)"
+    \contact_name TEXT)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \contact_detail(contact_id BLOB, \
     \contact_detail_type TEXT, \
