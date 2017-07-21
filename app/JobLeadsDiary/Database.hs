@@ -3,6 +3,7 @@ module JobLeadsDiary.Database (
   DBM,
   Source,
   Action,
+  Contact,
   ActionType(..),
   withDatabase,
   float,
@@ -10,7 +11,9 @@ module JobLeadsDiary.Database (
   refDB,
   unrefDB,
   getSource,
-  sourcesBeginningWith
+  sourcesBeginningWith,
+  newContact,
+  addContactDetail
  ) where
 
 import Control.Applicative
@@ -20,6 +23,7 @@ import Control.Monad
 import Control.Monad.IO.Class
 import GHC.Stack.Types(HasCallStack(..))
 import qualified Data.ByteString.Lazy as BL
+import Data.List (nub)
 import Data.Maybe
 import qualified Data.Text as T
 import Data.Time
@@ -80,7 +84,7 @@ parseUUID bs = case UUID.fromByteString bs of
   Nothing -> error $ "ByteString is wrong length to represent UUID"
   Just u -> u
 
-newtype Source = Source UUID.UUID
+newtype Source = Source UUID.UUID deriving (Eq,Ord)
 
 getSource :: T.Text -> DBM Source
 getSource n = DBM (\_ c -> do
@@ -120,7 +124,7 @@ isSourceBlacklisted (Source uuid) = DBM (\_ c -> do
     _ -> return False
  )
 
-newtype Action = Action UUID.UUID
+newtype Action = Action UUID.UUID deriving (Eq,Ord)
 data ActionType = MyAction | Response
 
 newAction :: [Source] -> ActionType -> T.Text -> DBM Action
@@ -159,7 +163,7 @@ followAction s (Action ff) y d = DBM (\_ c -> do
   return (Action aid)
  )
 
-newtype Contact = Contact UUID.UUID
+newtype Contact = Contact UUID.UUID deriving (Eq,Ord)
 
 newContact :: T.Text -> DBM Contact
 newContact n = DBM (\_ c -> do
@@ -167,6 +171,37 @@ newContact n = DBM (\_ c -> do
   execute c "INSERT INTO contact(contact_id,contact_name) VALUES (?,?)"
     (UUID.toByteString cid, n)
   return (Contact cid)
+ )
+
+addContactDetail :: Contact -> T.Text -> T.Text -> DBM ()
+addContactDetail (Contact i) t d = DBM (\_ c ->
+  execute c "INSERT INTO contact_detail(contact_id,\
+    \contact_detail_type,contact_detail) VALUES (?,?)"
+    (UUID.toByteString i, t, d)
+ )
+
+getContactName :: Contact -> DBM T.Text
+getContactName (Contact i) = DBM (\_ c -> do
+  l <- query c "SELECT contact_name FROM contact WHERE contact_id = ?"
+    (Only (UUID.toByteString i))
+  case l of
+    (Only n:_) -> return n
+    _ -> fail "Contact ID not found in database"
+ )
+
+searchContacts :: T.Text -> DBM [Contact]
+searchContacts n = DBM (\_ c -> do
+  let nw = mconcat ["%",n,"%"]
+  l1 <- query c "SELECT contact_id FROM contact WHERE contact_name LIKE ?"
+    (Only nw)
+  l2 <- query c "SELECT contact_id FROM contact_detail \
+    \WHERE contact_detail LIKE ?"
+    (Only nw)
+  return $ nub [Contact cid |
+    l <- [l1,l2],
+    Only b <- l,
+    Just cid <- [UUID.fromByteString b]
+   ]
  )
 
 openDatabase :: String -> IO (Connection)
