@@ -1,11 +1,16 @@
 {-# LANGUAGE OverloadedStrings,RankNTypes #-}
 module JobLeadsDiary.Database (
   DBM,
+  Source,
+  Action,
+  ActionType(..),
   withDatabase,
   float,
   forkDBM,
   refDB,
-  unrefDB
+  unrefDB,
+  getSource,
+  sourcesBeginningWith
  ) where
 
 import Control.Applicative
@@ -15,6 +20,7 @@ import Control.Monad
 import Control.Monad.IO.Class
 import GHC.Stack.Types(HasCallStack(..))
 import qualified Data.ByteString.Lazy as BL
+import Data.Maybe
 import qualified Data.Text as T
 import Data.Time
 import qualified Data.UUID as UUID
@@ -91,6 +97,70 @@ getSource n = DBM (\_ c -> do
     _ -> error "Multiple sources with same name in database"
  )
 
+sourcesBeginningWith :: T.Text -> DBM [Source]
+sourcesBeginningWith n = DBM (\_ c ->
+  mapMaybe (fmap Source . UUID.fromByteString . fromOnly) <$>
+    query c "SELECT source_id FROM source WHERE source_name LIKE ?"
+      (Only $ mappend n "%")
+ )
+
+getSourceName :: Source -> DBM (Maybe T.Text)
+getSourceName (Source uuid) = DBM (\_ c ->
+  (fmap fromOnly . listToMaybe) <$>
+  query c "SELECT source_name FROM source WHERE source_id = ?"
+  (Only $ UUID.toByteString uuid)
+ )
+
+isSourceBlacklisted :: Source -> DBM Bool
+isSourceBlacklisted (Source uuid) = DBM (\_ c -> do
+  l <- query c "SELECT source_is_blacklisted FROM source WHERE source_id = ?"
+    (Only $ UUID.toByteString uuid)
+  case l of
+    (Only True:_) -> return True
+    _ -> return False
+ )
+
+newtype Action = Action UUID.UUID
+data ActionType = MyAction | Response
+
+newAction :: [Source] -> ActionType -> T.Text -> DBM Action
+newAction s y d = DBM (\_ c -> do
+  ts <- getCurrentTime
+  aid <- UUID.nextRandom
+  execute c "INSERT INTO action(action_id,action_timestamp,action_follow_from,\
+    \action_direction,description) VALUES(?,?,?,?,?)" (UUID.toByteString aid,
+      ts,
+      (Nothing :: Maybe BL.ByteString),
+      case y of
+        MyAction -> False
+        Response -> True,
+      d
+     )
+  forM_ s $ \(Source s') -> execute c "INSERT INTO action_to_source(action_id,\
+    \source_id) VALUES (?,?)" (UUID.toByteString aid, UUID.toByteString s')
+  return (Action aid)
+ )
+
+followAction :: [Source] -> Action -> ActionType -> T.Text -> DBM Action
+followAction s (Action ff) y d = DBM (\_ c -> do
+  ts <- getCurrentTime
+  aid <- UUID.nextRandom
+  execute c "INSERT INTO action(action_id,action_timestamp,action_follow_from,\
+    \action_direction,description) VALUES(?,?,?,?,?)" (UUID.toByteString aid,
+      ts,
+      UUID.toByteString ff,
+      case y of
+        MyAction -> False
+        Response -> True,
+      d
+     )
+  forM_ s $ \(Source s') -> execute c "INSERT INTO action_to_source(action_id,\
+    \source_id) VALUES (?,?)" (UUID.toByteString aid, UUID.toByteString s')
+  return (Action aid)
+ )
+
+newtype Contact = Contact UUID.UUID
+
 openDatabase :: String -> IO (Connection)
 openDatabase n = do
   conn <- open n
@@ -109,7 +179,6 @@ openDatabase n = do
     \ON DELETE SET NULL)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \contact(contact_id BLOB PRIMARY KEY, \
-    \source_id BLOB, \
     \contact_name TEXT, \
     \FOREIGN KEY (source_id) REFERENCES source(source_id) ON DELETE SET NULL)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
@@ -129,4 +198,11 @@ openDatabase n = do
     \PRIMARY KEY (action_id,contact_id), \
     \FOREIGN KEY (action_id) REFERENCES action(action_id) ON DELETE CASCADE, \
     \FOREIGN KEY (contact_id) REFERENCES contact(contact_id) ON DELETE CASCADE)"
+  execute_ conn "CREATE TABLE IF NOT EXISTS \
+    \contact_to_source(contact_id BLOB, \
+    \source_id BLOB, \
+    \PRIMARY KEY (contact_id, source_id), \
+    \FOREIGN KEY (contact_id) REFERENCES contact(contact_id) \
+    \ON DELETE CASCADE, \
+    \FOREIGN KEY (source_id) REFERENCES source(source_id) ON DELETE CASCADE)"
   return conn
