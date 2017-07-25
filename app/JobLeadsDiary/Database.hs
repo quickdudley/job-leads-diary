@@ -12,8 +12,18 @@ module JobLeadsDiary.Database (
   unrefDB,
   getSource,
   sourcesBeginningWith,
+  getSourceName,
+  isSourceBlacklisted,
+  newAction,
+  followAction,
+  setActionTimestamp,
+  getActionTimestamp,
+  actionsForDateRange,
+  actionsForContact,
   newContact,
-  addContactDetail
+  addContactDetail,
+  getContactName,
+  searchContacts,
  ) where
 
 import Control.Applicative
@@ -161,6 +171,36 @@ followAction s (Action ff) y d = DBM (\_ c -> do
   forM_ s $ \(Source s') -> execute c "INSERT INTO action_to_source(action_id,\
     \source_id) VALUES (?,?)" (UUID.toByteString aid, UUID.toByteString s')
   return (Action aid)
+ )
+
+setActionTimestamp :: Action -> UTCTime -> DBM ()
+setActionTimestamp (Action a) t = DBM (\_ c -> 
+  execute c "UPDATE action SET action_timestamp = ? WHERE action_id = ?"
+    (t, UUID.toByteString a)
+ )
+
+getActionTimestamp :: Action -> DBM UTCTime
+getActionTimestamp (Action a) = DBM (\_ c -> do
+  l <- query c "SELECT action_timestamp FROM action WHERE action_id = ?"
+    (Only (UUID.toByteString a))
+  case l of
+    (Only r:_) -> return r
+    _ -> fail "Action missing from databse"
+ )
+
+actionsForDateRange :: UTCTime -> UTCTime -> DBM [Action]
+actionsForDateRange b e = DBM (\_ c -> do
+  l <- query c "SELECT action_id FROM action WHERE \
+    \action_timestamp >= ? AND action_timestamp <= ?"
+    (b,e)
+  return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
+ )
+
+actionsForContact :: Contact -> DBM [Action]
+actionsForContact (Contact cid) = DBM (\_ c -> do
+  l <- query c "SELECT action_id FROM contact_to_action WHERE contact_id = ?"
+    (Only $ UUID.toByteString cid)
+  return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
  )
 
 newtype Contact = Contact UUID.UUID deriving (Eq,Ord)
