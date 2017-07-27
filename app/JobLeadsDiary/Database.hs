@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings,RankNTypes #-}
+{-# LANGUAGE OverloadedStrings,RankNTypes,MultiParamTypeClasses #-}
 module JobLeadsDiary.Database (
   DBM,
   Source,
@@ -204,6 +204,72 @@ actionsForContact (Contact cid) = DBM (\_ c -> do
   return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
  )
 
+class Linkable a b where
+  link :: a -> b -> DBM ()
+  getLinked :: a -> DBM [b]
+
+instance Linkable Source Contact where
+  link (Source sid) (Contact cid) = DBM (\_ c ->
+    execute c "INSERT INTO contact_to_source(source_id,contact_id) VALUES(?,?)"
+      (UUID.toByteString sid, UUID.toByteString cid)
+   )
+  getLinked (Source sid) = DBM (\_ c -> do
+    l <- query c "SELECT contact_id FROM contact_to_source WHERE source_id = ?"
+      (Only $ UUID.toByteString sid)
+    return [Contact cid | Only x <- l, Just cid <- [UUID.fromByteString x]]
+   )
+
+instance Linkable Contact Source where
+  link (Contact cid) (Source sid)  = DBM (\_ c ->
+    execute c "INSERT INTO contact_to_source(source_id,contact_id) VALUES(?,?)"
+      (UUID.toByteString sid, UUID.toByteString cid)
+   )
+  getLinked (Contact cid) = DBM (\_ c -> do
+    l <- query c "SELECT source_id FROM contact_to_source WHERE contact_id = ?"
+      (Only $ UUID.toByteString cid)
+    return [Source sid | Only x <- l, Just sid <- [UUID.fromByteString x]]
+   )
+
+instance Linkable Contact Action where
+  link (Contact cid) (Action aid) = DBM (\_ c ->
+    execute c "INSERT INTO contact_to_action(action_id,contact_id) VALUES(?,?)"
+      (UUID.toByteString aid, UUID.toByteString cid)
+   )
+  getLinked = actionsForContact
+
+instance Linkable Action Contact where
+  link (Action aid) (Contact cid) = DBM (\_ c ->
+    execute c "INSERT INTO contact_to_action(action_id,contact_id) VALUES(?,?)"
+      (UUID.toByteString aid, UUID.toByteString cid)
+   )
+  getLinked (Action aid) = DBM (\_ c -> do
+    l <- query c "SELECT contact_id FROM contact_to_action WHERE action_id = ?"
+      (Only $ UUID.toByteString aid)
+    return [Contact cid | Only x <- l, Just cid <- [UUID.fromByteString x]]
+   )
+
+instance Linkable Source Action where
+  link (Source sid) (Action aid) = DBM (\_ c ->
+    execute c "INSERT INTO action_to_source(action_id,source_id) VALUES(?,?)"
+      (UUID.toByteString aid, UUID.toByteString sid)
+   )
+  getLinked (Source sid) = DBM (\_ c -> do
+    l <- query c "SELECT action_id FROM action_to_source WHERE source_id = ?"
+      (Only $ UUID.toByteString sid)
+    return $ [Action aid | Only x <- l, Just aid <- [UUID.fromByteString x]]
+   )
+
+instance Linkable Action Source where
+  link (Action aid) (Source sid) = DBM (\_ c ->
+    execute c "INSERT INTO action_to_source(action_id,source_id) VALUES(?,?)"
+      (UUID.toByteString aid, UUID.toByteString sid)
+   )
+  getLinked (Action aid) = DBM (\_ c -> do
+    l <- query c "SELECT source_id FROM action_to_source WHERE action_id = ?"
+      (Only $ UUID.toByteString aid)
+    return $ [Source sid | Only x <- l, Just sid <- [UUID.fromByteString x]]
+   )
+
 actionsForSource :: Source -> DBM [Action]
 actionsForSource (Source sid) = DBM (\_ c -> do
   l <- query c "SELECT action_id FROM action_to_source WHERE source_id = ?"
@@ -233,7 +299,7 @@ newContact n = DBM (\_ c -> do
 addContactDetail :: Contact -> T.Text -> T.Text -> DBM ()
 addContactDetail (Contact i) t d = DBM (\_ c ->
   execute c "INSERT INTO contact_detail(contact_id,\
-    \contact_detail_type,contact_detail) VALUES (?,?)"
+    \contact_detail_type,contact_detail) VALUES (?,?,?)"
     (UUID.toByteString i, t, d)
  )
 
@@ -244,6 +310,12 @@ getContactName (Contact i) = DBM (\_ c -> do
   case l of
     (Only n:_) -> return n
     _ -> fail "Contact ID not found in database"
+ )
+
+getContactDetails :: Contact -> DBM [(T.Text,T.Text)]
+getContactDetails (Contact cid) = DBM (\_ c ->
+  query c "SELECT contact_detail_type, contact_detail FROM contact_detail \
+    \WHERE contact_id = ?" (Only $ UUID.toByteString cid)
  )
 
 searchContacts :: T.Text -> DBM [Contact]
