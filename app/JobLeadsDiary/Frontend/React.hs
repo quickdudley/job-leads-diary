@@ -1,5 +1,6 @@
 {-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
 module JobLeadsDiary.Frontend.React (
+  staticFiles
  ) where
 
 import Control.Applicative
@@ -15,6 +16,7 @@ import System.Process
 
 import JobLeadsDiary.Frontend.Types
 
+staticFiles :: EmbedTree
 staticFiles = $(do
   runIO $ callCommand "cd frontend; npm run build"
   mfp <- runIO $ findExecutable "file"
@@ -22,14 +24,21 @@ staticFiles = $(do
     Nothing -> fail "Could not find \"file\" executable!"
     Just p -> return p
   let
+    b :: [([String]->[String],String)] -> Q [Exp]
     b [] = return []
-    b ((pa,p):r) = doesDirectoryExist >>= \de -> if de
+    b ((pa,p):r) = runIO (doesDirectoryExist p) >>= \de -> if de
       then do
-        s <- listDirectory p
-        b (r ++ map (\fn -> (pa . (fn:)), p </> fn) s)
+        s <- runIO $ listDirectory p
+        b (r ++ map (\fn -> ((pa . (fn:)), p </> fn)) s)
       else do
-        mt <- readProces fep ["-b","--mime-type",p]
+        mt <- runIO $ readProcess fep ["-b","--mime-type",p] ""
         fc <- embedFile p
-        ((mt,fc):) <$> b r
-  cl <- runIO $ b [(id,"frontend/")]
+        e <- [| oneFile
+          $(return $ ListE $ map (LitE . StringL) $ pa [])
+          $(return $ LitE $ StringL mt)
+          $(return fc)
+         |]
+        (e:) <$> b r
+  cl <- b [(id,"frontend/build")]
+  return $ AppE (VarE $ mkName "mconcat") $ ListE cl
  )
