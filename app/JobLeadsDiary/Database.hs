@@ -20,6 +20,7 @@ module JobLeadsDiary.Database (
   getActionTimestamp,
   actionsForDateRange,
   actionsForContact,
+  actionsForSource,
   newContact,
   addContactDetail,
   getContactName,
@@ -201,6 +202,22 @@ actionsForContact (Contact cid) = DBM (\_ c -> do
   l <- query c "SELECT action_id FROM contact_to_action WHERE contact_id = ?"
     (Only $ UUID.toByteString cid)
   return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
+ )
+
+actionsForSource :: Source -> DBM [Action]
+actionsForSource (Source sid) = DBM (\_ c -> do
+  l <- query c "SELECT action_id FROM action_to_source WHERE source_id = ?"
+    (Only $ UUID.toByteString sid)
+  return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
+ )
+
+actionDescription :: Action -> DBM T.Text
+actionDescription (Action aid) = DBM (\_ c -> do
+  l <- query c "SELECT description FROM action WHERE action_id = ?"
+    (Only $ UUID.toByteString aid)
+  case l of
+    [Only d] -> return d
+    _ -> fail "Action not present in database"
  )
 
 newtype Contact = Contact UUID.UUID deriving (Eq,Ord)
