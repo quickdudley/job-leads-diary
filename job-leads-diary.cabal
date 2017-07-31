@@ -31,7 +31,9 @@ executable job-leads-diary-exe
                        directory,
                        file-embed,
                        process,
+                       json == 0.9.1,
                        wai,
+                       warp,
                        warp-tls
   default-language:    Haskell2010
 
