@@ -14,6 +14,7 @@ import System.FilePath
 import System.Directory
 import System.Process
 
+import JobLeadsDiary.Frontend.Filetypes
 import JobLeadsDiary.Frontend.Types
 
 staticFiles :: EmbedTree
@@ -31,7 +32,9 @@ staticFiles = $(do
         s <- runIO $ listDirectory p
         b (r ++ map (\fn -> ((pa . (fn:)), p </> fn)) s)
       else do
-        mt <- runIO $ readProcess fep ["-b","--mime-type",p] ""
+        mt <- case suffixMime p of
+          Nothing -> runIO $ readProcess fep ["-b","--mime-type",p] ""
+          Just s -> return s
         fc <- embedFile p
         e <- [| oneFile
           $(return $ ListE $ map (LitE . StringL) $ pa [])
