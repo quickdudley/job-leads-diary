@@ -13,7 +13,6 @@ module JobLeadsDiary.Database (
   getSource,
   sourcesBeginningWith,
   getSourceName,
-  isSourceBlacklisted,
   newAction,
   followAction,
   setActionTimestamp,
@@ -32,6 +31,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.IO.Class
+import Crypto.KDF.BCrypt
 import GHC.Stack.Types(HasCallStack(..))
 import qualified Data.ByteString.Lazy as BL
 import Data.List (nub)
@@ -126,24 +126,19 @@ getSourceName (Source uuid) = DBM (\_ c ->
   (Only $ UUID.toByteString uuid)
  )
 
-isSourceBlacklisted :: Source -> DBM Bool
-isSourceBlacklisted (Source uuid) = DBM (\_ c -> do
-  l <- query c "SELECT source_is_blacklisted FROM source WHERE source_id = ?"
-    (Only $ UUID.toByteString uuid)
-  case l of
-    (Only True:_) -> return True
-    _ -> return False
- )
+newtype User = User UUID.UUID deriving (Eq,Ord)
 
 newtype Action = Action UUID.UUID deriving (Eq,Ord)
 data ActionType = MyAction | Response
 
-newAction :: [Source] -> ActionType -> T.Text -> DBM Action
-newAction s y d = DBM (\_ c -> do
+newAction :: User -> [Source] -> ActionType -> T.Text -> DBM Action
+newAction (User uid) s y d = DBM (\_ c -> do
   ts <- getCurrentTime
   aid <- UUID.nextRandom
-  execute c "INSERT INTO action(action_id,action_timestamp,action_follow_from,\
-    \action_direction,description) VALUES(?,?,?,?,?)" (UUID.toByteString aid,
+  execute c "INSERT INTO action(action_id,user_id,action_timestamp,\
+    \action_follow_from,\action_direction,description) VALUES(?,?,?,?,?)"
+    (UUID.toByteString aid,
+      UUID.toByteString uid,
       ts,
       (Nothing :: Maybe BL.ByteString),
       case y of
@@ -160,8 +155,12 @@ followAction :: [Source] -> Action -> ActionType -> T.Text -> DBM Action
 followAction s (Action ff) y d = DBM (\_ c -> do
   ts <- getCurrentTime
   aid <- UUID.nextRandom
-  execute c "INSERT INTO action(action_id,action_timestamp,action_follow_from,\
-    \action_direction,description) VALUES(?,?,?,?,?)" (UUID.toByteString aid,
+  [Only uid] <- query c "SELECT user_id FROM action WHERE action_id = ?"
+    (Only $ UUID.toByteString ff) :: IO [Only BL.ByteString]
+  execute c "INSERT INTO action(action_id,user_id,action_timestamp,\
+    \action_follow_from,action_direction,description) VALUES(?,?,?,?,?)"
+    (UUID.toByteString aid,
+      uid,
       ts,
       UUID.toByteString ff,
       case y of
@@ -189,11 +188,12 @@ getActionTimestamp (Action a) = DBM (\_ c -> do
     _ -> fail "Action missing from databse"
  )
 
-actionsForDateRange :: UTCTime -> UTCTime -> DBM [Action]
-actionsForDateRange b e = DBM (\_ c -> do
+actionsForDateRange :: User -> UTCTime -> UTCTime -> DBM [Action]
+actionsForDateRange (User uid) b e = DBM (\_ c -> do
   l <- query c "SELECT action_id FROM action WHERE \
+    \user_id = ? AND \
     \action_timestamp >= ? AND action_timestamp <= ?"
-    (b,e)
+    (UUID.toByteString uid, b, e)
   return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
  )
 
@@ -207,17 +207,6 @@ actionsForContact (Contact cid) = DBM (\_ c -> do
 class Linkable a b where
   link :: a -> b -> DBM ()
   getLinked :: a -> DBM [b]
-
-instance Linkable Source Contact where
-  link (Source sid) (Contact cid) = DBM (\_ c ->
-    execute c "INSERT INTO contact_to_source(source_id,contact_id) VALUES(?,?)"
-      (UUID.toByteString sid, UUID.toByteString cid)
-   )
-  getLinked (Source sid) = DBM (\_ c -> do
-    l <- query c "SELECT contact_id FROM contact_to_source WHERE source_id = ?"
-      (Only $ UUID.toByteString sid)
-    return [Contact cid | Only x <- l, Just cid <- [UUID.fromByteString x]]
-   )
 
 instance Linkable Contact Source where
   link (Contact cid) (Source sid)  = DBM (\_ c ->
@@ -248,17 +237,6 @@ instance Linkable Action Contact where
     return [Contact cid | Only x <- l, Just cid <- [UUID.fromByteString x]]
    )
 
-instance Linkable Source Action where
-  link (Source sid) (Action aid) = DBM (\_ c ->
-    execute c "INSERT INTO action_to_source(action_id,source_id) VALUES(?,?)"
-      (UUID.toByteString aid, UUID.toByteString sid)
-   )
-  getLinked (Source sid) = DBM (\_ c -> do
-    l <- query c "SELECT action_id FROM action_to_source WHERE source_id = ?"
-      (Only $ UUID.toByteString sid)
-    return $ [Action aid | Only x <- l, Just aid <- [UUID.fromByteString x]]
-   )
-
 instance Linkable Action Source where
   link (Action aid) (Source sid) = DBM (\_ c ->
     execute c "INSERT INTO action_to_source(action_id,source_id) VALUES(?,?)"
@@ -270,10 +248,11 @@ instance Linkable Action Source where
     return $ [Source sid | Only x <- l, Just sid <- [UUID.fromByteString x]]
    )
 
-actionsForSource :: Source -> DBM [Action]
-actionsForSource (Source sid) = DBM (\_ c -> do
-  l <- query c "SELECT action_id FROM action_to_source WHERE source_id = ?"
-    (Only $ UUID.toByteString sid)
+actionsForSource :: User -> Source -> DBM [Action]
+actionsForSource (User uid) (Source sid) = DBM (\_ c -> do
+  l <- query c "SELECT action_id FROM action_to_source WHERE \
+    \user_id = ? AND source_id = ?"
+    (UUID.toByteString uid, UUID.toByteString sid)
   return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
  )
 
@@ -288,11 +267,12 @@ actionDescription (Action aid) = DBM (\_ c -> do
 
 newtype Contact = Contact UUID.UUID deriving (Eq,Ord)
 
-newContact :: T.Text -> DBM Contact
-newContact n = DBM (\_ c -> do
+newContact :: User -> T.Text -> DBM Contact
+newContact (User uid) n = DBM (\_ c -> do
   cid <- UUID.nextRandom
-  execute c "INSERT INTO contact(contact_id,contact_name) VALUES (?,?)"
-    (UUID.toByteString cid, n)
+  execute c "INSERT INTO contact(contact_id,user_id,contact_name) \
+    \VALUES (?,?,?)"
+    (UUID.toByteString cid, UUID.toByteString uid, n)
   return (Contact cid)
  )
 
@@ -318,14 +298,15 @@ getContactDetails (Contact cid) = DBM (\_ c ->
     \WHERE contact_id = ?" (Only $ UUID.toByteString cid)
  )
 
-searchContacts :: T.Text -> DBM [Contact]
-searchContacts n = DBM (\_ c -> do
+searchContacts :: User -> T.Text -> DBM [Contact]
+searchContacts (User uid) n = DBM (\_ c -> do
   let nw = mconcat ["%",n,"%"]
-  l1 <- query c "SELECT contact_id FROM contact WHERE contact_name LIKE ?"
-    (Only nw)
+  l1 <- query c "SELECT contact_id FROM contact WHERE \
+    \user_id = ? AND contact_name LIKE ?"
+    (UUID.toByteString uid, nw)
   l2 <- query c "SELECT contact_id FROM contact_detail \
-    \WHERE contact_detail LIKE ?"
-    (Only nw)
+    \WHERE user_id = ? AND contact_detail LIKE ?"
+    (UUID.toByteString uid, nw)
   return $ nub [Contact cid |
     l <- [l1,l2],
     Only b <- l,
@@ -337,27 +318,41 @@ openDatabase :: String -> IO (Connection)
 openDatabase n = do
   conn <- open n
   execute_ conn "CREATE TABLE IF NOT EXISTS \
+    \user(user_id BLOB PRIMARY KEY, \
+    \username TEXT, \
+    \user_pw_hash BLOB, \
+    \user_real_name TEXT, \
+    \user_email TEXT)"
+  execute_ conn "CREATE TABLE IF NOT EXISTS \
     \source(source_id BLOB PRIMARY KEY, \
     \source_name TEXT, \
-    \source_add_timestamp INTEGER, \
-    \source_is_blacklisted NUMERIC)"
+    \source_add_timestamp INTEGER)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \action(action_id BLOB PRIMARY KEY, \
+    \user_id BLOB, \
     \action_timestamp INTEGER, \
     \action_follow_from BLOB, \
     \action_direction INTEGER, \
     \description TEXT, \
     \FOREIGN KEY (action_follow_from) REFERENCES action(action_id) \
-    \ON DELETE SET NULL)"
+    \ON DELETE SET NULL, \
+    \FOREIGN KEY (user_id) REFERENCES user(user_id) ON DELETE CASCADE)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \contact(contact_id BLOB PRIMARY KEY, \
-    \contact_name TEXT)"
+    \user_id BLOB,\
+    \contact_name TEXT, \
+    \FOREIGN KEY (user_id) REFERENCES user(user_id) ON DELETE CASCADE)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \contact_detail(contact_id BLOB, \
     \contact_detail_type TEXT, \
     \contact_detail TEXT,\ 
     \PRIMARY KEY (contact_id, contact_detail_type), \
     \FOREIGN KEY (contact_id) REFERENCES contact(contact_id) ON DELETE CASCADE)"
+  execute_ conn "CREATE TABLE IF NOT EXISTS\
+    \user_cookie(user_cookie_text BLOB PRIMARY KEY, \
+    \user_id BLOB, \
+    \user_cookie_expiry INTEGER, \
+    \FOREIGN KEY (user_id) REFERENCES user(user_id) ON DELETE CASCADE)"
   -- Linking tables
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \action_to_source(action_id BLOB, source_id BLOB, \
