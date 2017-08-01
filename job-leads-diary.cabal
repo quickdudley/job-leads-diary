@@ -32,6 +32,7 @@ executable job-leads-diary-exe
                        file-embed,
                        process,
                        json == 0.9.1,
+                       http-types,
                        wai,
                        warp,
                        warp-tls
