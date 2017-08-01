@@ -97,26 +97,29 @@ parseUUID bs = case UUID.fromByteString bs of
 
 newtype Source = Source UUID.UUID deriving (Eq,Ord)
 
-getSource :: T.Text -> DBM Source
-getSource n = DBM (\_ c -> do
-  es <- query c "SELECT source_id FROM source WHERE source_name = ?" (Only n)
+getSource :: User -> T.Text -> DBM Source
+getSource (User uid) n = DBM (\_ c -> do
+  es <- query c "SELECT source_id FROM source WHERE \
+    \source_name = ? AND user_id = ?" (n, UUID.toByteString uid)
   case es of
     [Only bs] -> return (Source $ parseUUID bs)
     [] -> do
       nid <- UUID.nextRandom
       ts <- getCurrentTime
       execute c "INSERT INTO source(source_id, source_name, \
-        \source_add_timestamp, source_is_blacklisted) VALUES (?,?,?,0)"
-        (UUID.toByteString nid,n,ts)
+        \source_add_timestamp, source_is_blacklisted, user_id) \
+        \VALUES (?,?,?,0,?)"
+        (UUID.toByteString nid,n,ts,UUID.toByteString uid)
       return (Source nid)
     _ -> error "Multiple sources with same name in database"
  )
 
-sourcesBeginningWith :: T.Text -> DBM [Source]
-sourcesBeginningWith n = DBM (\_ c ->
+sourcesBeginningWith :: User -> T.Text -> DBM [Source]
+sourcesBeginningWith (User uid) n = DBM (\_ c ->
   mapMaybe (fmap Source . UUID.fromByteString . fromOnly) <$>
-    query c "SELECT source_id FROM source WHERE source_name LIKE ?"
-      (Only $ mappend n "%")
+    query c "SELECT source_id FROM source WHERE source_name LIKE ? \
+      \AND user_id = ?"
+      (mappend n "%", UUID.toByteString uid)
  )
 
 getSourceName :: Source -> DBM (Maybe T.Text)
@@ -124,6 +127,12 @@ getSourceName (Source uuid) = DBM (\_ c ->
   (fmap fromOnly . listToMaybe) <$>
   query c "SELECT source_name FROM source WHERE source_id = ?"
   (Only $ UUID.toByteString uuid)
+ )
+
+isSourceBlacklisted :: Source -> DBM Bool
+isSourceBlacklisted (Source sid) = DBM (\_ c -> (any (== (Only True))) <$>
+  query c "SELECT source_is_blacklisted FROM source WHERE source_id = ?"
+    (Only $ UUID.toByteString sid)
  )
 
 newtype User = User UUID.UUID deriving (Eq,Ord)
@@ -325,8 +334,11 @@ openDatabase n = do
     \user_email TEXT)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \source(source_id BLOB PRIMARY KEY, \
+    \user_id BLOB, \
     \source_name TEXT, \
-    \source_add_timestamp INTEGER)"
+    \source_add_timestamp INTEGER, \
+    \source_is_blacklisted NUMERIC, \
+    \FOREIGN KEY (user_id) REFERENCES user(user_id) ON DELETE CASCADE)"
   execute_ conn "CREATE TABLE IF NOT EXISTS \
     \action(action_id BLOB PRIMARY KEY, \
     \user_id BLOB, \
