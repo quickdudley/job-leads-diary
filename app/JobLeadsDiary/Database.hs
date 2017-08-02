@@ -137,6 +137,42 @@ isSourceBlacklisted (Source sid) = DBM (\_ c -> (any (== (Only True))) <$>
 
 newtype User = User UUID.UUID deriving (Eq,Ord)
 
+newUser :: T.Text -> DBM (Maybe User)
+newUser n = DBM (\_ c -> do
+  e <- query c "SELECT user_id FROM user WHERE username = ?" (Only n) ::
+    IO [Only BL.ByteString]
+  case e of
+    [] -> do
+      uid <- UUID.nextRandom
+      execute c "INSERT INTO user(user_id,username) VALUES (?,?)"
+        (UUID.toByteString uid, n)
+      return (Just (User uid))
+    _ -> return Nothing
+ )
+
+lookupUser :: T.Text -> DBM (Maybe User)
+lookupUser n = DBM (\_ c -> do
+  e <- query c "SELECT user_id FROM user WHERE username = ?" (Only n)
+  case e of
+    [Only uid] -> return (User <$> UUID.fromByteString uid)
+    _ -> return Nothing
+ )
+
+userSetRealName :: User -> T.Text -> DBM ()
+userSetRealName (User uid) n = DBM (\_ c ->
+  execute c "UPDATE user SET user_real_name = ? WHERE user_id = ?"
+    (n, UUID.toByteString uid)
+ )
+
+userGetRealName :: User -> DBM T.Text
+userGetRealName (User uid) = DBM (\_ c -> do
+  l <- query c "SELECT user_real_name FROM user WHERE user_id = ?"
+    (Only $ UUID.toByteString uid)
+  case l of
+    [Only t] -> return t
+    _ -> fail "User not found in database"
+ )
+
 newtype Action = Action UUID.UUID deriving (Eq,Ord)
 data ActionType = MyAction | Response
 
@@ -145,7 +181,7 @@ newAction (User uid) s y d = DBM (\_ c -> do
   ts <- getCurrentTime
   aid <- UUID.nextRandom
   execute c "INSERT INTO action(action_id,user_id,action_timestamp,\
-    \action_follow_from,\action_direction,description) VALUES(?,?,?,?,?)"
+    \action_follow_from,action_direction,description) VALUES(?,?,?,?,?,?)"
     (UUID.toByteString aid,
       UUID.toByteString uid,
       ts,
@@ -228,6 +264,14 @@ instance Linkable Contact Source where
     return [Source sid | Only x <- l, Just sid <- [UUID.fromByteString x]]
    )
 
+instance Linkable Source Contact where
+  link s c = link c s
+  getLinked (Source sid) = DBM (\_ c -> do
+    l <- query c "SELECT contact_id FROM contact_to_source WHERE source_id = ?"
+      (Only $ UUID.toByteString sid)
+    return [Contact cid | Only x <- l, Just cid <- [UUID.fromByteString x]]
+   )
+
 instance Linkable Contact Action where
   link (Contact cid) (Action aid) = DBM (\_ c ->
     execute c "INSERT INTO contact_to_action(action_id,contact_id) VALUES(?,?)"
@@ -257,11 +301,10 @@ instance Linkable Action Source where
     return $ [Source sid | Only x <- l, Just sid <- [UUID.fromByteString x]]
    )
 
-actionsForSource :: User -> Source -> DBM [Action]
-actionsForSource (User uid) (Source sid) = DBM (\_ c -> do
-  l <- query c "SELECT action_id FROM action_to_source WHERE \
-    \user_id = ? AND source_id = ?"
-    (UUID.toByteString uid, UUID.toByteString sid)
+actionsForSource :: Source -> DBM [Action]
+actionsForSource (Source sid) = DBM (\_ c -> do
+  l <- query c "SELECT action_id FROM action_to_source WHERE source_id = ?"
+    (Only $ UUID.toByteString sid)
   return [Action x | Only n <- l, Just x <- [UUID.fromByteString n]]
  )
 
@@ -360,7 +403,7 @@ openDatabase n = do
     \contact_detail TEXT,\ 
     \PRIMARY KEY (contact_id, contact_detail_type), \
     \FOREIGN KEY (contact_id) REFERENCES contact(contact_id) ON DELETE CASCADE)"
-  execute_ conn "CREATE TABLE IF NOT EXISTS\
+  execute_ conn "CREATE TABLE IF NOT EXISTS \
     \user_cookie(user_cookie_text BLOB PRIMARY KEY, \
     \user_id BLOB, \
     \user_cookie_expiry INTEGER, \
