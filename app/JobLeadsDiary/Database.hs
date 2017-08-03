@@ -13,6 +13,12 @@ module JobLeadsDiary.Database (
   getSource,
   sourcesBeginningWith,
   getSourceName,
+  isSourceBlacklisted,
+  newUser,
+  lookupUser,
+  userWithCookie,
+  userSetRealName,
+  userGetRealName,
   newAction,
   followAction,
   setActionTimestamp,
@@ -158,6 +164,20 @@ lookupUser n = DBM (\_ c -> do
     _ -> return Nothing
  )
 
+userWithCookie :: T.Text -> DBM (Maybe User)
+userWithCookie ct = DBM (\_ c -> do
+  ts <- getCurrentTime
+  l <- query c "SELECT user_id,user_cookie_expiry FROM user_cookie WHERE \
+    \user_cookie_text = ?"
+    (Only ct)
+  case l of
+    [(_,et)] | et < ts -> do
+      execute c "DELETE FROM user_cookie WHERE user_cookie_text = ?" (Only ct)
+      return Nothing
+    [(uid,_)] -> return $ User <$> UUID.fromByteString uid
+    _ -> return Nothing
+ )
+
 userSetRealName :: User -> T.Text -> DBM ()
 userSetRealName (User uid) n = DBM (\_ c ->
   execute c "UPDATE user SET user_real_name = ? WHERE user_id = ?"
@@ -203,7 +223,7 @@ followAction s (Action ff) y d = DBM (\_ c -> do
   [Only uid] <- query c "SELECT user_id FROM action WHERE action_id = ?"
     (Only $ UUID.toByteString ff) :: IO [Only BL.ByteString]
   execute c "INSERT INTO action(action_id,user_id,action_timestamp,\
-    \action_follow_from,action_direction,description) VALUES(?,?,?,?,?)"
+    \action_follow_from,action_direction,description) VALUES(?,?,?,?,?,?)"
     (UUID.toByteString aid,
       uid,
       ts,
