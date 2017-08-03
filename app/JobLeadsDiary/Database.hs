@@ -6,10 +6,7 @@ module JobLeadsDiary.Database (
   Contact,
   ActionType(..),
   withDatabase,
-  float,
   forkDBM,
-  refDB,
-  unrefDB,
   getSource,
   sourcesBeginningWith,
   getSourceName,
@@ -37,6 +34,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.IO.Unlift
 import Crypto.KDF.BCrypt
 import GHC.Stack.Types(HasCallStack(..))
 import qualified Data.ByteString.Lazy as BL
@@ -47,6 +45,7 @@ import Data.Time
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Database.SQLite.Simple
+import System.Mem.Weak
 
 newtype DBM a = DBM (TVar Integer -> Connection -> IO a)
 
@@ -68,6 +67,19 @@ instance Monad DBM where
 instance MonadIO DBM where
   liftIO = DBM . const . const
 
+instance MonadUnliftIO DBM where
+  askUnliftIO = DBM (\n c -> do
+    atomically $ do
+      nv <- readTVar n
+      writeTVar n (nv + 1)
+    let
+      r = UnliftIO $ \(DBM m) -> m n c
+    addFinalizer r $ atomically $ do
+      nv <- readTVar n
+      writeTVar n (nv - 1)
+    return r
+   )
+
 withDatabase :: String -> DBM a -> IO a
 withDatabase fn (DBM a) = do
   t <- newTVarIO 0
@@ -81,20 +93,11 @@ withDatabase fn (DBM a) = do
 getConnection :: DBM Connection
 getConnection = DBM (\_ t -> return t)
 
-float :: DBM a -> DBM (IO a)
-float (DBM a) = DBM (\t c -> return $ a t c)
-
 forkDBM :: DBM () -> DBM ThreadId
 forkDBM (DBM a) = DBM (\t c -> do
   atomically $ modifyTVar t (+ 1)
   forkIO $ a t c *> atomically (modifyTVar t (subtract 1))
  )
-
-refDB :: DBM ()
-refDB = DBM (\t _ -> atomically $ modifyTVar t (+ 1))
-
-unrefDB :: DBM ()
-unrefDB = DBM (\t _ -> atomically $ modifyTVar t (subtract 1))
 
 parseUUID :: forall r . forall a . HasCallStack => BL.ByteString -> UUID.UUID
 parseUUID bs = case UUID.fromByteString bs of
